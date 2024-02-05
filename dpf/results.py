@@ -308,7 +308,7 @@ class Log_Likelihood(Reporter):
         super().initialise(PF, iterations)
         if not isinstance(PF.model, SSM):
             raise TypeError("Model must inherit from the Auxiliary_Feynman_Kac class")
-        self.results = pt.empty((PF.x_t.size(0), self.expected_length), device=PF.device)
+        self.results = pt.empty((PF.x_t.size(0), self.expected_length, 1), device=PF.device)
         self.FK_likelihood = pt.zeros(PF.x_t.size(0), device=PF.device)
         self.log_particles = np.log(PF.n_particles)
 
@@ -321,12 +321,12 @@ class Log_Likelihood(Reporter):
             if PF.t == 0:
                 importance_weights = PF.model.log_G_0_guided(PF.x_t, PF.n_particles)
             else:
-                importance_weights = PF.model.log_G_t_guided(PF.x_t, PF.x_t_1, PF.t) - PF.model.log_eta_t(PF.x_t_1, PF.t - 1)
-            self.results[PF.t] = pt.logsumexp(importance_weights) + self.FK_likelihood - norm_weights_1
+                importance_weights = PF.resampled_weights + PF.model.log_G_t_guided(PF.x_t, PF.x_t_1, PF.t) - PF.model.log_eta_t(PF.x_t_1, PF.t - 1)
+            self.results[:, PF.t, :] = pt.logsumexp(importance_weights) + self.FK_likelihood
             self.FK_likelihood = self.FK_likelihood + sum_of_weights
             return
         self.FK_likelihood = self.FK_likelihood + sum_of_weights
-        self.results[:, PF.t] = self.FK_likelihood
+        self.results[:, PF.t, :] = self.FK_likelihood
 
 
 class Log_Likelihood_Factors(Reporter):
@@ -340,17 +340,17 @@ class Log_Likelihood_Factors(Reporter):
         super().initialise(PF, iterations)
         if not isinstance(PF.model, SSM):
             raise TypeError("Model must inherit from the Auxiliary_Feynman_Kac class")
-        self.results = pt.empty((PF.x_t.size(0), self.expected_length), device=PF.device)
+        self.results = pt.empty((PF.x_t.size(0), self.expected_length, 1), device=PF.device)
         self.likelihood = Log_Likelihood()
         self.likelihood.initialise(PF, iterations)
 
     def evaluate(self, PF: Differentiable_Particle_Filter):
         self.likelihood.evaluate(PF)
         if PF.t == 0:
-            self.results[:, 0] = self.likelihood.results[:, 0]
+            self.results[:, 0, :] = self.likelihood.results[:, 0, :]
             return
 
-        self.results[:, PF.t] = self.likelihood.results[:, PF.t] - self.likelihood.results[:, PF.t - 1]
+        self.results[:, PF.t, :] = self.likelihood.results[:, PF.t, :] - self.likelihood.results[:, PF.t - 1, :]
 
 
 class ESS(Reporter):
