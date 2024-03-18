@@ -47,7 +47,6 @@ class Loss(metaclass=ABCMeta):
 class Compound_Loss(Loss):
 
     def __init__(self, loss_list:Iterable[Loss]):
-        super().__init__()
         self.loss_list = loss_list
     
     def register_data(self, **data):
@@ -76,9 +75,8 @@ class Compound_Loss(Loss):
 class Supervised_L2_Loss(Loss):
 
     def __init__(self, statistic:str='filtering_mean', function:Callable=lambda x:x):
-        super().__init__()
         self.function = function
-        self.create_reporters(statistic)
+        self.create_reporters(statistic, function)
 
     def create_reporters(self, statistic, function):
         if isinstance(statistic, results.Reporter):
@@ -97,7 +95,6 @@ class Supervised_L2_Loss(Loss):
     
 class Magnitude_Loss(Loss):
     def __init__(self, statistic, function:Callable=lambda x:x, sign:int=1):
-        super().__init__()
         self.function = function
         self.sign = sign
         self.create_reporters(statistic)

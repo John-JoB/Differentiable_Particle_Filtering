@@ -306,17 +306,17 @@ class soft_grad_wrapper(pt.autograd.Function):
     Wrapper used to clamp the gradient of soft resampling, for numerical stability
     """
     @staticmethod
-    def forward(ctx:Any, new_weights:pt.Tensor, new_particles:pt.Tensor, old_weights:pt.Tensor, old_particles:pt.Tensor):
-        ctx.save_for_backward(new_weights, new_particles, old_weights, old_particles)
+    def forward(ctx:Any, new_weights:pt.Tensor, new_particles:pt.Tensor, old_weights:pt.Tensor, old_particles:pt.Tensor, grad_scale:pt.Tensor):
+        ctx.save_for_backward(new_weights, new_particles, old_weights, old_particles, grad_scale)
         return new_weights.clone(), new_particles.clone()
     
     @staticmethod
     def backward(ctx, d_dweights, d_dxn):
-        d_dweights = d_dweights*1
-        d_dxn = d_dxn*1
-        new_weights, new_particles, old_weights, old_particles = ctx.saved_tensors
+        new_weights, new_particles, old_weights, old_particles, grad_scale = ctx.saved_tensors
+        d_dweights = d_dweights*grad_scale
+        d_dxn = d_dxn*grad_scale
         d_dw, d_dx = pt.autograd.grad([new_weights, new_particles], [old_weights, old_particles], grad_outputs=[d_dweights, d_dxn], retain_graph=True)
-        return None, None, d_dw, d_dx
+        return None, None, d_dw, d_dx, None
     
 class hard_grad_wrapper(pt.autograd.Function):
 
@@ -338,11 +338,12 @@ class Soft_Resampler_Systematic(Resampler):
     Soft resampling with systematic resampler
     """
 
-    def __init__(self, tradeoff:float, device:str = 'cuda'):
+    def __init__(self, tradeoff:float, grad_scale:float, device:str = 'cuda'):
         super().__init__()
         self.device = device
         self.tradeoff = tradeoff
         self.log_tradeoff = pt.log(pt.tensor((self.tradeoff), device=self.device))
+        self.grad_scale = pt.tensor(grad_scale)
         if self.tradeoff != 1:
             self.log_inv_tradeoff = pt.log(pt.tensor((1-self.tradeoff), device=self.device))
 
@@ -363,13 +364,12 @@ class Soft_Resampler_Systematic(Resampler):
         resampled_particles = batched_reindex(x_t, resampled_indicies)
         if self.tradeoff == 1.:
             new_weights = pt.zeros_like(log_w_t, device= self.device)
-            #resampled_particles = hard_grad_wrapper.apply(resampled_particles, x_t)
             resampled_particles = resampled_particles.detach()
         else:
             resampled_particle_probs = batched_reindex(log_particle_probs.unsqueeze(2), resampled_indicies).squeeze()
             resampled_weights = batched_reindex(log_w_t.unsqueeze(2), resampled_indicies).squeeze()
             new_weights = resampled_weights - resampled_particle_probs
-            new_weights, resampled_particles = soft_grad_wrapper.apply(new_weights, resampled_particles, log_w_t, x_t)
+            new_weights, resampled_particles = soft_grad_wrapper.apply(new_weights, resampled_particles, log_w_t, x_t, self.grad_scale)
         return resampled_particles, new_weights, resampled_indicies
     
     
@@ -378,11 +378,10 @@ class Soft_Resampler_Multinomial(Resampler):
     Soft resampling with multinomial resampler
     """
 
-    def __init__(self, tradeoff:float, ratio:float, device:str = 'cuda'):
+    def __init__(self, tradeoff:float, device:str = 'cuda'):
         super().__init__()
         self.device = device
         self.tradeoff = tradeoff
-        self.ratio = ratio
         if tradeoff != 1:
             self.log_tradeoff = pt.log(pt.tensor((self.tradeoff), device=device))
             self.log_inv_tradeoff = pt.log(pt.tensor((1-self.tradeoff), device=device))
@@ -395,10 +394,10 @@ class Soft_Resampler_Multinomial(Resampler):
         else:
             log_particle_probs = pt.logaddexp(self.log_tradeoff+log_w_t,  self.log_inv_tradeoff - pt.log(pt.tensor((N), device=self.device)))
         particle_probs = pt.exp(log_particle_probs.detach())
-        resampled_indicies = pt.multinomial(particle_probs, N//self.ratio, replacement=True).to(device=self.device)
+        resampled_indicies = pt.multinomial(particle_probs, N, replacement=True).to(device=self.device)
         resampled_particles = batched_reindex(x_t, resampled_indicies)
         if self.tradeoff == 1.:
-            new_weights = pt.zeros_like(log_w_t,device=self.device)
+            new_weights = pt.zeros_like(log_w_t, device=self.device)
         else:
             new_weights = log_w_t - log_particle_probs
             new_weights = batched_reindex(new_weights.unsqueeze(2), resampled_indicies).squeeze()

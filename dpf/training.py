@@ -1,20 +1,10 @@
 import torch as pt
-from torch import nn
 from .simulation import Differentiable_Particle_Filter
-from copy import copy
 from tqdm import tqdm
-from typing import Callable, Iterable
+from typing import Iterable
 from matplotlib import pyplot as plt
 import numpy as np
-from .results import Reporter
-from torch.utils.tensorboard import SummaryWriter
-import time
-import torch.autograd.profiler as profiler
-import warnings
 from copy import deepcopy
-from graphviz import Digraph
-import torch
-from torch.autograd import Variable, Function
 from .loss import Loss
 
 
@@ -28,14 +18,15 @@ def _test(
     with pt.inference_mode():
         for i, simulated_object in enumerate(tqdm(data)):
             loss.clear_data()
+            loss.register_data(truth=simulated_object)
             DPF(simulated_object, T, loss.get_reporters())
-            loss_t = loss.forward()
+            loss_t = loss().item()
             try:
-                loss = pt.concat(loss, loss_t.cpu().detach().numpy())
+                tracked_loss = np.concatenate(loss, np.array([loss_t]))
             except:
-                loss = loss_t.cpu().detach().numpy()   
-    print(f'Test loss: {np.mean(loss)}')
-    return loss
+                tracked_loss = np.array([loss_t])  
+    print(f'Test loss: {np.mean(tracked_loss)}')
+    return tracked_loss
 
 def e2e_train(
         DPF: Differentiable_Particle_Filter,
@@ -52,11 +43,11 @@ def e2e_train(
         ):
     train_set, valid_set, test_set = pt.utils.data.random_split(data, set_fractions)
     if batch_size[0] == -1:
-        batch_size[0] == len(train_set)
+        batch_size[0] = len(train_set)
     if batch_size[1] == -1:
-        batch_size[1] == len(valid_set)
+        batch_size[1] = len(valid_set)
     if batch_size[2] == -1:
-        batch_size[2] == len(test_set)
+        batch_size[2] = len(test_set)
 
     train = pt.utils.data.DataLoader(train_set, batch_size[0], shuffle=True, collate_fn=data.collate, num_workers= data.workers)
     valid = pt.utils.data.DataLoader(valid_set, min(batch_size[1], len(valid_set)), shuffle=False, collate_fn=data.collate, num_workers= data.workers)
@@ -74,19 +65,21 @@ def e2e_train(
         for b, simulated_object in train_it:
             opt.zero_grad()
             loss.clear_data()
-            loss.register_data(simulated_object)
+            loss.register_data(truth=simulated_object)
             DPF(simulated_object, T, loss.get_reporters())
-            loss.forward()
+            loss()
             loss.backward()
             opt.step()
             train_loss[b + len(train)*epoch] = loss.item()
-        opt_schedule.step()
+        if opt_schedule is not None:
+            opt_schedule.step()
         DPF.eval()
         with pt.inference_mode():
             for simulated_object in valid:
                 loss.clear_data()
+                loss.register_data(truth=simulated_object)
                 DPF(simulated_object, T, loss.get_reporters())
-                test_loss[epoch] += loss.forward().item()
+                test_loss[epoch] += loss().item()
             test_loss[epoch] /= len(valid)
 
         if test_loss[epoch].item() < min_valid_loss:
@@ -95,8 +88,8 @@ def e2e_train(
 
         if verbose:
             print(f'Epoch {epoch}:')
-            print(f'Train loss: {np.mean(np.sqrt(train_loss[epoch*len(train):(epoch+1)*len(train)]))}')
-            print(f'Validation loss: {np.sqrt(test_loss[epoch])}\n')
+            print(f'Train loss: {np.mean(train_loss[epoch*len(train):(epoch+1)*len(train)])}')
+            print(f'Validation loss: {test_loss[epoch]}\n')
 
 
     if verbose:
@@ -117,6 +110,6 @@ def test(DPF: Differentiable_Particle_Filter,
         ):
         test_set, _ =  pt.utils.data.random_split(data, [fraction, 1-fraction])
         if batch_size == -1:
-            batch_size == len(test_set)
+            batch_size = len(test_set)
         test = pt.utils.data.DataLoader(test_set, min(batch_size, len(test_set)), shuffle=False, collate_fn=data.collate, num_workers= data.workers, drop_last=True)
         _test(DPF, loss, T, test)

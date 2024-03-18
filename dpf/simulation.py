@@ -1,6 +1,7 @@
 from .model import (
     Feynman_Kac,
     Simulated_Object,
+    HMM
 )
 from .utils import normalise_log_quantity
 import numpy as np
@@ -253,3 +254,49 @@ class Differentiable_Particle_Filter(nn.Module):
                 plt.ylabel(dims[1])
 
                 plt.show(block=True)
+
+class HMM_Inference(nn.Module):
+    '''
+    Requires that the HMM has a bounded number of states
+    '''
+
+    def __init__(self, model: HMM, device: str ='cuda'):
+        self.device = device
+        self.model = model
+        if not model.alg == model.PF_Type.Bootstrap:
+            raise TypeError('The given HMM should be bootstrap')
+        
+    def __copy__(self):
+        return HMM_Inference(copy(self.model), self.device)
+
+    def initialise(self, truth:Simulated_Object):
+        self.truth = truth
+        self.states = self.model.generate_state_0().unsqueeze(0)
+        self.prediction = self.model.log_M_0(self.states).squeeze()
+        marginal_likelihoods = self.model.log_f_t(self.states, 0).squeeze()
+        unnorm_filter = self.prediction + marginal_likelihoods
+        self.likelihood_factor = pt.logsumexp(unnorm_filter)
+        self.filter = unnorm_filter - self.likelihood_factor
+        self.t = 0
+
+    def advance_one(self):
+        self.t += 1
+        self.states_1 = self.states.clone() # 1xRxC
+        self.states = self.model.generate_state_t(self.states_1, self.t) # 1xSxD
+        repeat_states = pt.transpose(self.states, 0, 1).expand(self.states_1.size(1) , dim = 1) # SxRxD 
+        repeat_states_1 = self.states_1.expand(self.states.size(0), dim=0) # SxRxC
+        trans_probs =  self.model.log_M_t(repeat_states, repeat_states_1, self.t) # SxR
+        self.prediction = pt.logsumexp(self.filter.unsqueeze(0).expand(self.states.size(1), 0) + trans_probs, dim = 1) # S
+        marginal_likelihoods = self.model.log_f_t(self.states, 0).squeeze()
+        unnorm_filter = self.prediction + marginal_likelihoods
+        self.likelihood_factor = pt.logsumexp(unnorm_filter)
+        self.filter = unnorm_filter - self.likelihood_factor
+        
+    def forward(self, T:int, truth:Simulated_Object):
+        self.initialise(truth)
+        likelihood = pt.tensor(0)
+        likelihood = likelihood + self.likelihood_factor
+        for i in range(T):
+            self.advance_one()
+            likelihood = likelihood + self.likelihood_factor
+        return likelihood

@@ -1,12 +1,10 @@
 from .simulation import Differentiable_Particle_Filter
-from .utils import normalise_log_quantity, parallelise
+from .utils import normalise_log_quantity
 import numpy as np
 from matplotlib import pyplot as plt
 #from joblib import cpu_count
-from copy import copy
 from .model import SSM
 import torch as pt
-from .resampling import batched_reindex
 from typing import Callable
 
 
@@ -314,19 +312,19 @@ class Log_Likelihood(Reporter):
 
     def evaluate(self, PF: Differentiable_Particle_Filter):
 
-        sum_resampled_weights =  pt.logsumexp(PF.resampled_weights, dim=1)
-        sum_of_weights = PF.log_weights[:, 0] - PF.log_normalised_weights[:, 0] - sum_resampled_weights
+        #sum_resampled_weights =  pt.logsumexp(PF.resampled_weights, dim=1)
+        sum_of_weights = PF.log_weights[:, 0] - PF.log_normalised_weights[:, 0] - self.log_particles #sum_resampled_weights
         
-        if self.PF_type == 'Auxiliary':
+        if PF.model.alg == PF.model.PF_Type.Auxiliary:
             if PF.t == 0:
                 importance_weights = PF.model.log_G_0_guided(PF.x_t, PF.n_particles)
             else:
                 importance_weights = PF.resampled_weights + PF.model.log_G_t_guided(PF.x_t, PF.x_t_1, PF.t) - PF.model.log_eta_t(PF.x_t_1, PF.t - 1)
-            self.results[:, PF.t, :] = pt.logsumexp(importance_weights) + self.FK_likelihood
+            self.results[:, PF.t, :] = pt.logsumexp(importance_weights, dim = 1) + self.FK_likelihood
             self.FK_likelihood = self.FK_likelihood + sum_of_weights
             return
         self.FK_likelihood = self.FK_likelihood + sum_of_weights
-        self.results[:, PF.t, :] = self.FK_likelihood
+        self.results[:, PF.t, :] = self.FK_likelihood.unsqueeze(1)
 
 
 class Log_Likelihood_Factors(Reporter):

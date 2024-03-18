@@ -1,12 +1,11 @@
 import warnings
 import numpy as np
 from typing import Union, Iterable, Callable
-from joblib import cpu_count, Parallel, delayed
 import torch as pt
 import random, os
 import numpy as np
+from tqdm import tqdm
 
-cpu_cores = cpu_count()
 
 def normalise_log_quantity(log_weights: pt.Tensor) -> pt.Tensor:
     """
@@ -52,18 +51,22 @@ def batched_select(vector, indices):
 
     Parameters
     -----------
-        vector: B X D pt.Tensor
+    vector: B_1 X B_2 X ... X B_n X D_1 X ... X D_n pt.Tensor
             The tensor to index
 
-        indices: B_1 X B_2 X...X B_n pt.Tensor
+    indices: B_1 X B_2 X...X B_n pt.Tensor
         The tensor of indices
+    
+    Returns
+    ---------
+    output: B_1 X B_2 X...X B_n X D_2 X ... X D_n pt.Tensor
     """
-    shape = vector.size()
-    residual_shape = shape[2:]
-    vector_temp = vector.view((shape[0]*shape[1], *residual_shape))
-    scaled_indicies = (indices + pt.arange(shape[0], device=vector.device).unsqueeze(dim=1)*shape[1]).to(pt.int).view(-1)
+    catagories = vector.size(len(indices.size()))
+    vector_temp = pt.flatten(vector, 0, len(indices.size()))
+    indices_temp = pt.flatten(indices)
+    scaled_indicies = (indices_temp + pt.arange(indices_temp.size(0), device=vector.device)*catagories).to(pt.int).view(-1)
     vector_temp = vector_temp[scaled_indicies]
-    return vector_temp.view((indices.size(0), indices.size(1), vector.size(2)))
+    return vector_temp.view((*indices.size(), *vector_temp.size()[1:]))
 
 
 
@@ -127,7 +130,7 @@ def bin(values, times, sample_points: Union[int, np.ndarray], log: bool = False)
     non_zeros = np.nonzero(samples_per_bin)
     return bin_avgs[non_zeros] / samples_per_bin[non_zeros], bin_centres[non_zeros]
 
-
+'''
 def parallelise(functions: Iterable[Callable], cores=cpu_cores, backend='loky'):
     """
     Run a set of functions in parallel and return their outputs in a generator
@@ -154,7 +157,7 @@ def parallelise(functions: Iterable[Callable], cores=cpu_cores, backend='loky'):
     return Parallel(n_jobs=cores, return_as="generator", prefer=backend)(
         delayed(f)() for f in functions
     )
-
+'''
 
 def log_multi_gaussian_density(mean, data, covar=None, det_covar=None, inv_covar=None):
     """Calculates the density of multivariate gaussian at a set of samples where
@@ -261,3 +264,22 @@ def grid_search(function: Callable, arg_dict: dict[Iterable]):
     print(f'Minimum loss: {min_loss}')
     print('With parameters:')
     print(min_set)
+
+def aggregate_runs(fun, iter, return_vals):
+    dicts = {}
+    for i in tqdm(range(iter)):
+        r = fun()
+        for idx, rv in enumerate(return_vals):
+            if i == 0:
+                dicts[rv] = {'raw': [r[idx]]}
+                continue
+            dicts[rv]['raw'] += [r[idx]]
+
+    for rv in return_vals:
+        dicts[rv]['raw'] = np.stack(dicts[rv]['raw'])
+        dicts[rv]['mean'] = np.mean(dicts[rv]['raw'], axis = 0)
+        dicts[rv]['std'] = np.std(dicts[rv]['raw'], axis = 0)
+        dicts[rv]['uq'] = np.quantile(dicts[rv]['raw'], 0.75, axis=0)
+        dicts[rv]['lq'] = np.quantile(dicts[rv]['raw'], 0.25, axis=0)
+
+    return dicts

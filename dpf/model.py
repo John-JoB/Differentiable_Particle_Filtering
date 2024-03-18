@@ -5,7 +5,7 @@ import os
 import shutil
 from enum import Enum
 from warnings import warn
-
+from .utils import nd_select, batched_select
 
 class Feynman_Kac(pt.nn.Module):
 
@@ -95,8 +95,11 @@ class Feynman_Kac(pt.nn.Module):
         NotImplementedError('Weighting function not implemented for time 0')
 
     # Sample M_0
-    def M_0_proposal(self, batches, n_samples: int):
-        NotImplementedError('Dynamic model sampler not implemented for time 0')
+    def M_0_proposal(self, batches:int, n_samples:int):
+        NotImplementedError('Proposal model sampler not implemented for time 0')
+
+    def log_M_0(self, x_0):
+        NotImplementedError('Proposal density not implemented for time 0')
 
     # Evaluate G_t
     def log_G_t(self, x_t, x_t_1, t: int):
@@ -104,7 +107,10 @@ class Feynman_Kac(pt.nn.Module):
 
     # Sample M_t
     def M_t_proposal(self, x_t_1, t: int):
-        NotImplementedError('Dynamic model sampler not implemented for time t')
+        NotImplementedError('Proposal model sampler not implemented for time t')
+
+    def log_M_t(self, x_t, x_t_1, t:int):
+        NotImplementedError('Proposal density not implemented for time t')
 
     def observation_generation(self, x_t):
         raise NotImplementedError('Observation generation not implemented')
@@ -161,6 +167,26 @@ class SSM(Feynman_Kac):
             + self.log_eta_t(x_t, t)
             - self.log_eta_t(x_t_1, t - 1)
         )
+
+class HMM(SSM):
+
+    def generate_state_0(self):
+        raise NotImplementedError('State generation not implemented for time 0')
+
+    def M_0_proposal(self, batches:int, n_samples: int):
+        state = self.generate_state_0() #SxD
+        probs = self.log_M_0(state.unsqueeze(0)).squeeze() #S
+        indices = pt.multinomial(pt.exp(probs), batches*n_samples, True).reshape(batches, n_samples) #BxN
+        return nd_select(state, indices)#BxNxD
+
+    def generate_state_t(self, x_t_1, t:int):
+        raise NotImplementedError('State generation not implemented for time t')
+
+    def M_t_proposal(self, x_t_1, t: int):
+        state = self.generate_state_t(x_t_1) #BxNxSxD
+        probs = self.log_M_t(state, x_t_1, t) #BxNxS
+        indices = pt.multinomial(pt.flatten(pt.exp(probs), 0,1), 1, True).reshape(x_t_1.shape(0), x_t_1.shape(1)) #BxN
+        return batched_select(state, indices) #BxNxD
 
 
 class State_Space_Object():
@@ -260,7 +286,7 @@ class Simulated_Object(State_Space_Object):
         self.object_time = 0
         self.model = model
         self.batch_size = batch_size
-        self.x_t = self.model.M_0_proposal(batch_size, 1)     
+        self.x_t = self.model.M_0_proposal(batch_size, 1)   
 
     def _forward(self):
         self.object_time += 1
@@ -304,22 +330,25 @@ class Simulated_Object(State_Space_Object):
         if t == 0 and not self.first_object_set:
             self.first_object_set = True
             self._set_observation(0, self.model.observation_generation(self.x_t))
-            return self.observations[0]
+            return self.observations[:, 0]
 
-        if t > self.object_time:
-            for t_i in range(self.object_time + 1, t + 1):
-                self._forward()
-                self._set_observation(t_i, self.model.observation_generation(self.x_t))
+        while t > self.object_time:
+            self._forward()
+            self._set_observation(self.object_time, self.model.observation_generation(self.x_t))
 
         return self.observations[:, t - self.time_index]
 
-    def save(self, path:str, T:int, quantity:int, prefix:str= 'str', clear_folder=True):
+    def save(self, path:str, T:int, quantity:int, prefix:str= 'str', clear_folder=True, bypass_ask = False):
         if self.model.alg != self.model.PF_Type.Bootstrap:
             warn(f'Model is {self.model.alg.name} instead of Bootstrap, are you this is right?')
         if clear_folder:
             if os.path.exists(path):
-                print(f'Warning: This will overwrite the directory at path {path}')
-                response = input('Input Y to confirm you want to do this:')
+                
+                if bypass_ask:
+                    response = 'Y'
+                else:
+                    print(f'Warning: This will overwrite the directory at path {path}')
+                    response = input('Input Y to confirm you want to do this:')
                 if response != 'Y' and response != 'y':
                     print('Halting')
                     return
@@ -385,8 +414,11 @@ class Observation_Queue(State_Space_Object):
 
             for t in range(time_length + 1):
                 if t == 0:
-                    self.observations = pt.empty((conversion_object._get_observation(t).size(0), time_length + 1, conversion_object.observation_dimension))
-                self.observations[:,t,:] = conversion_object._get_observation(t)
+                    o0 = conversion_object._get_observation(0)
+                    self.observations = pt.empty((o0.size(0), time_length + 1, conversion_object.observation_dimension))
+                    self.observations[:, 0, :] = o0
+                else:
+                    self.observations[:,t,:] = conversion_object._get_observation(t)
                 
                 if state_availiable:
                     self.state[:,t,:] = conversion_object.x_t.squeeze(1)
